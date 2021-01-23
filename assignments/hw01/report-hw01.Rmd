@@ -1,0 +1,44 @@
+---
+title: "Homework 01"
+author: "Spencer Pease"
+date: "1/25/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+options(knitr.kable.NA = '-')
+
+```
+
+# Questions
+
+```{r prep, include=FALSE}
+
+# Prep work ---------------------------------------------------------------
+
+library(dplyr)
+library(ggplot2)
+
+```
+
+
+## *Q1*
+
+## *Q2*
+
+## *Q3*
+
+## *Q4*
+
+## *Q5*
+
+# Appendix
+
+```{r getlabels, include=FALSE}
+labs <- knitr::all_labels()
+labs <- labs[!labs %in% c("setup", "toc", "getlabels", "allcode")]
+```
+
+```{r allcode, ref.label=labs, eval=FALSE, echo=TRUE}
+```
