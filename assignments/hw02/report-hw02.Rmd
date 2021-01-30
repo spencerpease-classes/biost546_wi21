@@ -1,0 +1,26 @@
+---
+title: 'Homework #2'
+author: "Spencer Pease"
+date: "2/08/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+gr <- 2 / (1 + sqrt(5))
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.asp = gr)
+options(knitr.kable.NA = '-')
+rm(gr)
+```
+
+\newpage
+
+# Appendix
+
+```{r getlabels, include=FALSE}
+labs <- knitr::all_labels()
+labs <- labs[!labs %in% c("setup", "toc", "getlabels", "allcode")]
+labs <- labs[!grepl("results", labs)]
+```
+
+```{r allcode, ref.label=labs, eval=FALSE, echo=TRUE}
+```
