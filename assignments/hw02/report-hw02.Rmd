@@ -1,0 +1,844 @@
+---
+title: 'Homework #2'
+author: "Spencer Pease"
+date: "2/08/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+gr <- 2 / (1 + sqrt(5))
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.asp = gr)
+options(knitr.kable.NA = '-')
+rm(gr)
+```
+
+```{r}
+# Prep work ---------------------------------------------------------------
+
+library(MASS)
+library(class)
+library(readr)
+library(dplyr)
+library(ggplot2)
+
+source("functions/gen_predict_bayes.R")
+source("functions/confusion_table.R")
+source("functions/plot_decision_boundary.R")
+source("functions/calculate_roc.R")
+
+df_wdbc <- read_csv("data/wdbc.data", col_names = FALSE) %>%
+  select(diagnosis = 2, radius = 3, texture = 4) %>%
+  mutate(
+    diagnosis = factor(
+      diagnosis, levels = c("B", "M"), labels = c("benign", "malignant")
+    )
+  )
+
+pred_point <- function(.model, .type = "link", ...) {
+  predict(.model, type = .type, newdata = data.frame(...))
+}
+
+set.seed(123456)
+
+```
+
+# Question 1
+
+## Part (a)
+
+```{r}
+
+# Question 1a -------------------------------------------------------------
+
+obs_by_class <- df_wdbc %>%
+  group_by(diagnosis) %>%
+  summarise(observations = n())
+
+```
+
+```{r q1a-results}
+knitr::kable(obs_by_class, caption = "Observations by diagnosis class")
+```
+
+The *wdbc* dataset has a sample size $n$ of `r nrow(df_wdbc)` and 2 predictors
+$p$. *Table 1* shows a summary of the number of observations in each class.
+
+
+## Part (b)
+
+```{r}
+
+# Question 1b -------------------------------------------------------------
+
+train_obs <- 400
+
+df_shuffled <- df_wdbc[sample(nrow(df_wdbc)), ]
+df_train <- df_shuffled[1:train_obs, ]
+df_test <- df_shuffled[(train_obs + 1):nrow(df_shuffled), ]
+
+```
+
+This dataset is randomly split into a training set of `r train_obs` observations
+and a test set of `r nrow(df_test)` observations.
+
+
+## Part (c)
+
+```{r}
+
+# Question 1c -------------------------------------------------------------
+
+plot_scatter <-
+  ggplot(df_train, aes(x = radius, y = texture, color = diagnosis)) +
+  geom_point() +
+  theme_bw(base_family = "serif") +
+  labs(
+    title = "Scatter of Tumor Texture vs Radius",
+    subtitle = "Grouped by diagnosis",
+    x = "Radius",
+    y = "Texture",
+    color = "Diagnosis"
+  )
+
+```
+
+```{r q1c-results}
+plot(plot_scatter)
+```
+
+Based on the scatter of outcome and predictors, being able to predict with
+perfect accuracy looks impossible. The distributions of outcome classifications
+in each predictor dimension overlap in such a way as to eliminate any possible
+decision boundary that would be robust to new observations.
+
+
+## Part (d)
+
+```{r}
+
+# Question 1d -------------------------------------------------------------
+
+model_logistic <- glm(diagnosis ~ ., family = "binomial", data = df_train)
+
+coef_logistic <- coef(model_logistic)
+
+```
+
+Fitting a logistic regression model of the form
+
+$$ \text{diagnosis} \sim \text{radius} + \text{texture} $$
+
+to the training dataset produces results shown in the below table.
+
+```{r q1d-results}
+
+q1d <- list(
+  sprintf("%.2f", coef_logistic["radius"]),
+  sprintf("%.2f", coef_logistic["texture"])
+)
+
+knitr::kable(
+  summary(model_logistic)$coefficients,
+  digits = 3,
+  caption = "Logistic regression summary"
+)
+```
+
+From this model, a one unit increase in *radius* is associated with a
+`r q1d[[1]]` increase in the log-odds of the diagnosis being malignant, and a
+one unit increase in *texture* is associated with a `r q1d[[2]]` increase in the
+log-odds of a malignant diagnosis.
+
+
+## Part (e)
+
+```{r}
+
+# Question 1e -------------------------------------------------------------
+
+logodds_calc_1e <- sum(coef_logistic * c(1, 10, 12))
+prob_calc_1e <- plogis(logodds_calc_1e)
+prob_pred_1e <- pred_point(model_logistic, "response", radius = 10, texture = 12)
+
+```
+
+```{r q1e-results}
+
+q1e <- list(
+  sprintf("%.4f", logodds_calc_1e),
+  sprintf("%.4f", prob_calc_1e),
+  sprintf("%.4f", prob_pred_1e)
+)
+
+```
+
+
+First, define $p$ as the the predicted probability of a malignant diagnosis
+given an observed *radius* of $10$ and *texture* of $12$:
+
+$$ p = P(Y = M \mid (X_1, X_2) = (10, 12)) $$
+
+With these values and the coefficients of the logistic model defined above, the
+relationship between the input data and output probability is:
+
+$$ \text{logit}(p) = \beta_0 + \beta_1 X_1 + \beta_2 X_2  $$
+
+With this relation and the definition of the logit, the value of $p$ is
+calculated to be:
+
+$$
+\begin{aligned}
+\frac{1-p}{p} &= \beta_0 + \beta_1 X_1 + \beta_2 X_2 \\
+p &= \frac{\exp(\beta_0 + \beta_1 X_1 + \beta_2 X_2)}
+          {1 + \exp(\beta_0 + \beta_1 X_1 + \beta_2 X_2)} \\
+p &= \frac{\exp(`r q1e[[1]]`)}{1 + \exp(`r q1e[[1]]`)} \\
+p &= `r q1e[[2]]`
+\end{aligned}
+$$
+
+This direct calculation agrees with the predicted probability computed directly
+with `predict()`, `r q1e[[3]]`.
+
+
+## Part (f)
+
+```{r}
+
+# Question 1f -------------------------------------------------------------
+
+prob_calc_1f <- exp(.7) / (1 + exp(.7))
+
+```
+
+If we know the estimated log-odds of the model to be $0.7$, then the estimated
+probability of a malignant diagnosis can be calculated by applying the inverse
+logit function:
+
+$$
+p = \text{invlogit}(0.7) = \frac{\exp(0.7)}{1 + \exp(0.7)}
+= `r round(prob_calc_1f, 2)`
+$$
+
+
+## Part (g)
+
+```{r}
+
+# Question 1g -------------------------------------------------------------
+
+pred_bayes_logistic <- gen_predict_bayes(
+  function(data) predict(model_logistic, data, type = "response")
+)
+
+class_logistic <- list(
+  train = pred_bayes_logistic(df_train, .5),
+  test = pred_bayes_logistic(df_test, .5)
+)
+
+confusion_logistic <- list(
+  train = confusion_table(class_logistic$train, diagnosis, pred_class),
+  test = confusion_table(class_logistic$test, diagnosis, pred_class)
+)
+
+acc_logistic <- list(
+  train = with(class_logistic$train, mean(diagnosis == pred_class)),
+  test = with(class_logistic$test, mean(diagnosis == pred_class))
+)
+
+```
+
+```{r q1g-results}
+
+q1g <- list(
+  round(acc_logistic$train, 3),
+  round(acc_logistic$test, 3)
+)
+
+
+knitr::kable(
+  confusion_logistic$train,
+  caption = "Confusion matrix of predicted outcomes for the training dataset"
+)
+
+knitr::kable(
+  confusion_logistic$test,
+  caption = "Confusion matrix of predicted outcomes for the test dataset"
+)
+
+```
+
+**Performance metrics:**
+
+ - Training accuracy: `r q1g[[1]]`
+ - Test accuracy: `r q1g[[2]]`
+
+The prediction accuracy are similar for both the training and test datasets,
+and the confusion matrices both show this model is more likely to report false
+negatives than false positives on similar data distributions.
+
+
+## Part (h)
+
+```{r}
+
+# Question 1h -------------------------------------------------------------
+
+plot_logistic_grid <-
+  plot_decision_boundary(df_train, pred_bayes_logistic, c(.25, .5, .75)) +
+  labs(
+    title = "Decision Boundary of the logistic model",
+    subtitle = "With different classification thresholds"
+  )
+
+```
+
+Plotting the decision boundary at different thresholds, we see the estimated
+boundary correctly classify more training observations with a *benign* diagnosis
+as the threshold increases, at the cost of mis-classifying more *malignant*
+diagnoses.
+
+
+```{r q1h-results, fig.asp=1.2}
+plot(plot_logistic_grid)
+```
+
+
+## Part (i)
+
+```{r}
+
+# Question 1i -------------------------------------------------------------
+
+roc_logistic <- calculate_roc(df_test, pred_bayes_logistic, seq(0, 1, by = .01))
+
+```
+
+```{r q1i-results}
+roc_logistic$plot + labs(title = "Logistic Model Test ROC Curve")
+```
+
+
+## Part (j)
+
+```{r}
+
+# Question 1j -------------------------------------------------------------
+
+auc_logistic <- roc_logistic$AUC$value
+
+```
+
+The estimated area under the ROC curve computed on the test dataset for the
+logistic model is: `r round(auc_logistic, 4)`.
+
+
+# Question 2
+
+## Part (a)
+
+```{r}
+
+# Question 2a -------------------------------------------------------------
+
+model_lda <- lda(diagnosis ~ ., df_train, center = TRUE, scale = TRUE)
+
+summary_lda <- model_lda$means %>%
+  as_tibble(rownames = "diagnosis") %>%
+  mutate(prior = model_lda$prior) %>%
+  select(diagnosis, prior, everything())
+
+```
+
+```{r q2a-results}
+knitr::kable(
+  summary_lda,
+  caption = "LDA model prior probabilities and group means",
+  digits = 3
+)
+```
+
+For the linear discriminant analysis (LDA) model, the priors represent the
+probability of randomly selecting an observation of the given class from the
+data used to fit the model. The group means represent the center of the
+Gaussian distribution defining the likelihood for each diagnosis class. For LDA,
+it is assumed that these likelihoods have the same variance. Together, the
+priors and likelihoods are proportional to the posterior probabilities.
+
+
+## Part (b)
+
+```{r}
+
+# Question 2b -------------------------------------------------------------
+
+pred_bayes_lda <- gen_predict_bayes(
+  function(data) predict(model_lda, data)$posterior[, "malignant"]
+)
+
+class_lda <- list(
+  train = pred_bayes_lda(df_train, .5),
+  test = pred_bayes_lda(df_test, .5)
+)
+
+confusion_lda <- list(
+  train = confusion_table(class_lda$train, diagnosis, pred_class),
+  test = confusion_table(class_lda$test, diagnosis, pred_class)
+)
+
+acc_lda <- list(
+  train = with(class_lda$train, mean(diagnosis == pred_class)),
+  test = with(class_lda$test, mean(diagnosis == pred_class))
+)
+
+```
+
+```{r q2b-results}
+
+q2b <- list(
+  round(acc_lda$train, 3),
+  round(acc_lda$test, 3)
+)
+
+
+knitr::kable(
+  confusion_lda$train,
+  caption = "Confusion matrix of predicted outcomes for the training dataset"
+)
+
+knitr::kable(
+  confusion_lda$test,
+  caption = "Confusion matrix of predicted outcomes for the test dataset"
+)
+
+```
+
+**Performance metrics:**
+
+ - Training accuracy: `r q2b[[1]]`
+ - Test accuracy: `r q2b[[2]]`
+
+The predictive accuracy of the training and test set are similar to each other.
+This is reflected in the confusion matrices, which have similar proportions of
+correct and incorrect predictions.
+
+
+## Part (c)
+
+```{r}
+
+# Question 2c -------------------------------------------------------------
+
+plot_lda_grid <-
+  plot_decision_boundary(df_train, pred_bayes_lda, c(.25, .5, .75)) +
+  labs(
+    title = "Decision Boundary of the LDA model",
+    subtitle = "With different classification thresholds"
+  )
+
+```
+
+```{r q2c-results, fig.asp=1.2}
+plot(plot_lda_grid)
+```
+
+Plotting the decision boundary at different thresholds, we see the estimated
+boundary correctly classify more training observations with a *benign* diagnosis
+as the threshold increases, at the cost of mis-classifying more *malignant*
+diagnoses.
+
+
+## Part (d)
+
+```{r}
+
+# Question 2d -------------------------------------------------------------
+
+roc_lda <- calculate_roc(df_test, pred_bayes_lda, seq(0, 1, by = .01))
+
+```
+
+```{r q2d-results}
+roc_lda$plot + labs(title = "LDA Model Test ROC Curve")
+```
+
+
+## Part (e)
+
+```{r}
+
+# Question 2e -------------------------------------------------------------
+
+auc_lda <- roc_lda$AUC$value
+
+```
+
+The estimated area under the ROC curve computed on the test dataset for the
+logistic model is: `r round(auc_lda, 4)`.
+
+
+# Question 3
+
+## Part (a)
+
+```{r}
+
+# Question 3a -------------------------------------------------------------
+
+model_qda <- qda(diagnosis ~ ., df_train, center = TRUE, scale = TRUE)
+
+summary_qda <- model_qda$means %>%
+  as_tibble(rownames = "diagnosis") %>%
+  mutate(prior = model_qda$prior) %>%
+  select(diagnosis, prior, everything())
+
+```
+
+```{r q3a-results}
+knitr::kable(
+  summary_qda,
+  caption = "QDA model prior probabilities and group means",
+  digits = 3
+)
+```
+
+For the quadratic discriminant analysis (QDA) model, the priors represent the
+probability of randomly selecting an observation of the given class from the
+data used to fit the model. The group means represent the center of the
+Gaussian distribution defining the likelihood for each diagnosis class. For QDA,
+it is not assumed that these likelihoods have the same variance. Together, the
+priors and likelihoods are proportional to the posterior probabilities.
+
+
+## Part (b)
+
+```{r}
+
+# Question 3b -------------------------------------------------------------
+
+pred_bayes_qda <- gen_predict_bayes(
+  function(data) predict(model_qda, data)$posterior[, "malignant"]
+)
+
+class_qda <- list(
+  train = pred_bayes_qda(df_train, .5),
+  test = pred_bayes_qda(df_test, .5)
+)
+
+confusion_qda <- list(
+  train = confusion_table(class_qda$train, diagnosis, pred_class),
+  test = confusion_table(class_qda$test, diagnosis, pred_class)
+)
+
+acc_qda <- list(
+  train = with(class_qda$train, mean(diagnosis == pred_class)),
+  test = with(class_qda$test, mean(diagnosis == pred_class))
+)
+
+```
+
+```{r q3b-results}
+
+q3b <- list(
+  round(acc_qda$train, 3),
+  round(acc_qda$test, 3)
+)
+
+
+knitr::kable(
+  confusion_qda$train,
+  caption = "Confusion matrix of predicted outcomes for the training dataset"
+)
+
+knitr::kable(
+  confusion_qda$test,
+  caption = "Confusion matrix of predicted outcomes for the test dataset"
+)
+
+```
+
+**Performance metrics:**
+
+ - Training accuracy: `r q3b[[1]]`
+ - Test accuracy: `r q3b[[2]]`
+
+The overall performance between the training and test models is similar, with
+the predictive accuracies being almost identical.
+
+
+## Part (c)
+
+```{r}
+
+# Question 3c -------------------------------------------------------------
+
+plot_qda_grid <-
+  plot_decision_boundary(df_train, pred_bayes_qda, c(.25, .5, .75)) +
+  labs(
+    title = "Decision Boundary of the QDA model",
+    subtitle = "With different classification thresholds"
+  )
+
+```
+
+```{r q3c-results, fig.asp=1.2}
+plot(plot_qda_grid)
+```
+
+As the threshold for a malignant diagnosis classification increases, the
+quadratic decision boundary shifts to mis-classify more malignant observations.
+The spread of data doesn't lend itself well to a quadratic decision boundary,
+and ends up practically functioning as a linear decision boundary.
+
+
+## Part (d)
+
+```{r}
+
+# Question 3d -------------------------------------------------------------
+
+roc_qda <- calculate_roc(df_test, pred_bayes_qda, seq(0, 1, by = .01))
+
+```
+
+```{r q3d-results}
+roc_qda$plot + labs(title = "QDA Model Test ROC Curve")
+```
+
+
+## Part (e)
+
+```{r}
+
+# Question 3e -------------------------------------------------------------
+
+auc_qda <- roc_qda$AUC$value
+
+```
+
+The estimated area under the ROC curve computed on the test dataset for the
+logistic model is: `r round(auc_qda, 4)`.
+
+
+# Question 4
+
+## Part (a)
+
+```{r}
+
+# Question 4a -------------------------------------------------------------
+
+pred_knn <- function(data, k_neighbors) {
+
+  df_train_scale <- df_train %>%
+    mutate(across(radius:texture, ~as.numeric(scale(.x))))
+
+  df_test_scale <- data %>%
+    mutate(across(radius:texture, ~as.numeric(scale(.x))))
+
+  add_preds <- function(k) {
+    data %>%
+        dplyr::mutate(
+          pred_class = knn(
+            train = dplyr::select(df_train_scale, radius:texture),
+            test = dplyr::select(df_test_scale, radius:texture),
+            cl = df_train_scale$diagnosis,
+            k = k
+          ),
+          k = k
+        )
+  }
+
+  k_neighbors %>% purrr::map_dfr(add_preds)
+
+}
+
+
+class_knn <- list(
+  train = pred_knn(df_train, c(1, 2, 3, 4, 20)) %>% group_by(k),
+  test = pred_knn(df_test, c(1, 2, 3, 4, 20)) %>% group_by(k)
+)
+
+confusion_knn <- list(
+  train = class_knn$train %>% confusion_table(diagnosis, pred_class),
+  test = class_knn$test %>% confusion_table(diagnosis, pred_class)
+)
+
+acc_knn <- list(
+  train = class_knn$train %>% summarise(accuracy = mean(diagnosis == pred_class)),
+  test = class_knn$test %>% summarise(accuracy = mean(diagnosis == pred_class))
+)
+
+```
+
+
+```{r q4a-results-1, results='asis'}
+print_table <- function(k, data, type) {
+  print(knitr::kable(
+    x = data,
+    caption = sprintf("%s kNN confusion matrix (k = %d)", type, k)
+  ))
+}
+
+confusion_knn$train %>%
+  tidyr::nest(data = -k) %>%
+  purrr::pwalk(print_table, type = "Training")
+
+confusion_knn$test %>%
+  tidyr::nest(data = -k) %>%
+  purrr::pwalk(print_table, type = "Test")
+```
+
+Looking at the training and test confusion matrices for different values of $k$,
+we see that the training $k=1$ model perfectly classifying all observations
+(because the prediction is based only on the point it was trained on), while
+larger $k$ generally show more mis-classifications. The test confusion matrices
+show the opposite trend: with generally fewer classification errors for larger
+$k$.
+
+
+```{r q4a-results-2}
+knitr::kable(
+  left_join(acc_knn$train, acc_knn$test, by = "k"),
+  caption = "kNN predictive accuracy",
+  col.names = c("k", "training", "test"),
+  digits = 3
+)
+```
+
+The estimated predictive accuracies tell the same story as the confusion
+matrices: predictive training accuracy is negatively associated with $k$, and
+predictive test accuracy has a positive association.
+
+
+
+## Part (b)
+
+```{r}
+
+# Question 4b -------------------------------------------------------------
+
+plot_knn_grid <-
+  plot_decision_boundary(df_train, pred_knn, c(1, 2, 3, 4, 20)) +
+  facet_wrap(vars(k), ncol = 2, labeller = "label_both") +
+  labs(
+    title = "Decision Boundary of the kNN model",
+    subtitle = "With different k neighbors"
+  )
+
+```
+
+```{r q4b-results, fig.asp=1.6}
+plot(plot_knn_grid)
+```
+
+For low $k$ the decision boundary is highly non-linear, closely following the
+training observations. As $k$ increases, the boundary begins to smooth, fitting
+the training data less well, but approaching a more believable approximation
+of the boundary between the true underlying distributions. At the highest $k$,
+however, the boundary is informed by so many neighbors that is begins to trend
+towards the average between the two outcomes.
+
+
+## Part (c)
+
+```{r}
+
+# Question 4c -------------------------------------------------------------
+
+pred_acc_knn <-
+  list(train = df_train, test = df_test) %>%
+  purrr::map(~pred_knn(.x, 1:20) %>% group_by(k)) %>%
+  purrr::map_dfr(
+    ~summarise(.x, accuracy = mean(diagnosis == pred_class)),
+    .id = "data_set"
+  )
+
+plot_pred_acc_knn <-
+  ggplot(pred_acc_knn, aes(x = k, y = accuracy, color = data_set)) +
+  geom_line(lty = "dashed") +
+  geom_point() +
+  scale_color_brewer(type = "qual") +
+  theme_bw(base_family = "serif") +
+  labs(
+    title = "kNN Predictive Accuracy",
+    x = "Neighbors (k)",
+    y = "Accuracy",
+    color = "Data set"
+  )
+
+```
+
+```{r q4c-results}
+plot(plot_pred_acc_knn)
+```
+
+As $k$ increases, the predictive accuracy on the test data increases, which is
+indicative of better model performance. As such, I would choose a $k$ between
+15 and 20, since in this test-train split of data the predictive test accuracy
+peaks at $k=18$.
+
+
+# Question 5
+
+```{r q5-results}
+
+x <- pred_acc_knn %>%
+  filter(k %in% c(1, 10, 20)) %>%
+  tidyr::pivot_wider(names_from = data_set, values_from = accuracy) %>%
+  rename(`threshold/k` = k) %>%
+  mutate(model = "kNN")
+
+acc_all <- list(logistic = acc_logistic, lda = acc_lda, qda = acc_qda) %>%
+  purrr::map_dfr(as_tibble, .id = "model") %>%
+  mutate(`threshold/k` = .5) %>%
+  select(model, `threshold/k`, train, test) %>%
+  bind_rows(x)
+
+knitr::kable(
+  x = acc_all,
+  caption = "Summary of model prediction accuracies",
+  digits = 3
+)
+
+```
+
+Overall, The k-nearest neighbors model has the best predictive accuracy, though
+the test accuracy of the logistic model comes close. Given that the ideal
+decision boundary of our data will be highly non-linear, we expect the kNN model
+to perform the best because it is a non-parametric model. The logistic, LDA, and
+QDA models are all linear, meaning they are fundamentally limited to fitting
+linear decision boundaries.
+
+One possible mitigation technique to approximate a more nonlinear boundary with
+linear models is to include more dimensions in the model. This comes with the
+cost of increased variance, but with the benefit a reduction in bias.
+
+
+\newpage
+
+# Appendix
+
+## Analysis
+
+```{r getlabels, include=FALSE}
+labs <- knitr::all_labels()
+labs <- labs[!labs %in% c("setup", "toc", "getlabels", "allcode")]
+labs <- labs[!grepl("results", labs)]
+```
+
+```{r allcode, ref.label=labs, eval=FALSE, echo=TRUE}
+```
+
+## Helper Functions
+
+```{r code=readLines("functions/gen_predict_bayes.R"), eval=FALSE, echo=TRUE}
+```
+
+```{r code=readLines("functions/confusion_table.R"), eval=FALSE, echo=TRUE}
+```
+
+```{r code=readLines("functions/plot_decision_boundary.R"), eval=FALSE, echo=TRUE}
+```
+
+```{r code=readLines("functions/calculate_roc.R"), eval=FALSE, echo=TRUE}
+```
