@@ -1,0 +1,721 @@
+---
+title: 'Homework #3'
+author: "Spencer Pease"
+date: "2/22/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(knitr.kable.NA = '-')
+```
+
+```{r}
+# Prep work ---------------------------------------------------------------
+
+library(dplyr)
+library(ggplot2)
+library(glmnet)
+library(ggcorrplot)
+
+source("functions/predict_bayes.R")
+source("functions/performance_metrics.R")
+source("functions/plots.R")
+source("functions/calculate_roc.R")
+
+df_wdbc <- readr::read_csv("data/wdbc.data", col_names = FALSE) %>%
+  select(2:32) %>%
+  setNames(c("diagnosis", paste0("X", 1:30))) %>%
+  mutate(
+    diagnosis = factor(
+      diagnosis, levels = c("B", "M"), labels = c("benign", "malignant")
+    )
+  )
+
+
+set.seed(123456)
+
+```
+
+# Question 1
+
+## Part (a, b)
+
+```{r}
+
+# Question 1a,b -----------------------------------------------------------
+
+gen_rnorm_data <- function(n) {
+
+  X <- rnorm(n)
+  eps <- rnorm(n)
+  Y <- 3 - (2 * X) + (3 * X^2) + eps
+
+  return(list(X = X, Y = Y))
+
+}
+
+data_rnorm <- gen_rnorm_data(30)
+
+```
+
+$X$ and $\epsilon$ are each $30$ random samples from the standard normal
+distribution ($\mathcal{N}(\mu=0, \sigma=1)$) used to construct the response:
+
+$$ Y = 3 - 2X + 3X^2 + \epsilon $$
+
+
+## Part (c)
+
+```{r}
+
+# Question 1c -------------------------------------------------------------
+
+lambda_grid <- exp(seq(5, -10,length = 100))
+X_poly7 <- poly(data_rnorm$X, degree = 7, raw = TRUE)
+
+model_rnorm_lasso <-  glmnet(
+  X_poly7, data_rnorm$Y,
+  alpha = 1,
+  lambda = lambda_grid,
+  thresh = 1e-8
+)
+
+model_rnorm_lasso_cv <- cv.glmnet(
+  X_poly7, data_rnorm$Y,
+  alpha = 1,
+  lambda = lambda_grid,
+  thresh = 1e-8,
+  nfolds = 10
+)
+
+model_rnorm_lasso_optimal <- glmnet(
+  X_poly7, data_rnorm$Y,
+  alpha = 1,
+  lambda = model_rnorm_lasso_cv$lambda.min,
+  thresh = 1e-8
+)
+
+coef_rnorm_lasso_optimal <- model_rnorm_lasso_optimal$beta[, 1]
+
+plot_rnorm_lasso <- plot_lambda_coef(model_rnorm_lasso, 1:7)
+plot_rnorm_lasso_cv <- plot_cv_error(model_rnorm_lasso_cv)
+
+```
+
+A lasso model of the form $Y \sim \text{poly}(X, 7)$ is then fit to the
+generated data $X$ and $Y$.
+
+```{r q1c1-results}
+plot_rnorm_lasso
+```
+
+```{r q1c2-results}
+q1c2 <- list(
+  round(model_rnorm_lasso_cv$lambda.min, 3)
+)
+
+plot_rnorm_lasso_cv
+```
+
+Performing cross-validation shows that a lambda value of `r q1c2[[1]]` minimizes
+the misclassification error, making it the optimal value for the tuning
+parameter.
+
+
+```{r q1c3-results}
+coef_rnorm_lasso_optimal %>%
+  setNames(paste0("$X^", 1:7, "$")) %>%
+  t() %>%
+  knitr::kable(
+    digits = 3,
+    eval = FALSE,
+    caption = "Optimal model coefficients"
+  )
+```
+
+Looking at the coefficients of the "optimal" model, we see that the lasso model
+is able to mostly recover the original response vector, selecting only the first
+and second degree terms with coefficients similar in direction and value to the
+actual coefficients.
+
+
+## Part (d)
+
+```{r}
+
+# Question 1d -------------------------------------------------------------
+
+data_rnorm2 <- gen_rnorm_data(1000)
+
+pred_Y2 <- predict(
+  model_rnorm_lasso_optimal,
+  poly(data_rnorm2$X, degree = 7, raw = TRUE)
+)
+
+mse_Y2 <- mean((data_rnorm2$Y - pred_Y2)^2)
+
+```
+
+Applying the optimal model to a set of 1000 new observations generated in the
+same manner yields a prediction mean squared error of `r round(mse_Y2, 3)`.
+
+
+# Question 2
+
+## Part(a)
+
+```{r}
+
+# Question 2a -------------------------------------------------------------
+
+obs_by_class <- df_wdbc %>%
+  group_by(diagnosis) %>%
+  summarise(observations = n())
+
+```
+
+```{r q2a-results}
+knitr::kable(obs_by_class, caption = "Observations by diagnosis class")
+```
+
+The *wdbc* dataset has a sample size $n$ of `r nrow(df_wdbc)` and
+`r ncol(df_wdbc) - 1` predictors $p$. *Table 2* shows a summary of the number of
+observations in each class.
+
+
+## Part (b, c)
+
+```{r}
+
+# Question 2b,c -----------------------------------------------------------
+
+train_obs <- 400
+
+set.seed(2)
+
+df_shuffled <- df_wdbc[sample(nrow(df_wdbc)), ]
+
+df_train <- df_shuffled %>%
+  slice(1:train_obs) %>%
+  mutate(across(-diagnosis, scale))
+
+df_test <- df_shuffled %>%
+  slice(-(1:train_obs)) %>%
+  mutate(across(-diagnosis, scale))
+
+```
+
+This dataset is randomly split into a training set of `r train_obs` observations
+and a test set of `r nrow(df_test)` observations. Each split is then normalized
+separately to prevent observations in one dataset from influencing the
+distribution characteristics of the other dataset. Put another way, we don't
+want any information from the test set affect how the training data is
+normalized, because then the test data will not be completely new to any model
+fit on the training data.
+
+
+## Part (d)
+
+```{r}
+
+# Question 2d -------------------------------------------------------------
+
+cor_wdbc_train <- df_train %>% select(-diagnosis) %>% cor()
+plot_cor_wdbc_train <- ggcorrplot(cor_wdbc_train) +
+  theme(text = element_text(family = "serif")) +
+  labs(title = "Training Predictor Correlation Matrix")
+
+```
+
+```{r q2d-results}
+plot_cor_wdbc_train
+```
+
+The correlation matrix shows some predictor pairs with near perfect correlation.
+This introduces collinearity to models including these predictor pairs, which
+can reduce the stability of other predictors' estimated coefficients.
+
+
+## Part (e)
+
+```{r}
+
+# Question 2e -------------------------------------------------------------
+
+model_wdbc_simple <- glm(diagnosis ~ ., family = "binomial", data = df_train)
+model_wdbc_simple_summary <- summary(model_wdbc_simple, correlation = TRUE)
+
+```
+
+```{r q2e-results}
+q2e <- list(
+  round(model_wdbc_simple_summary$correlation["X1", "X3"], 3)
+)
+
+knitr::kable(
+  coef(model_wdbc_simple_summary),
+  digits = 2,
+  caption = "Simple logistic regression training coefficients"
+)
+```
+
+The correlation between $X_1$ and $X_3$ in the simple logistic model is
+`r q2e[[1]]`.
+
+$\hat{\beta}_1$ and $\hat{\beta}_3$ are nearly equal and opposite of each other,
+with magnitudes greater than the coefficients of other predictors that aren't
+colinear with another. This confirms that the inclusion of colinear predictors
+leads to a less stable model with inflated effects of single predictors.
+
+
+## Part (f)
+
+```{r}
+
+# Question 2f -------------------------------------------------------------
+
+pred_wdbc_simple <- list(
+  train = predict_bayes(model_wdbc_simple, df_train),
+  test = predict_bayes(model_wdbc_simple, df_test)
+)
+
+confusion_wdbc_simple <- list(
+  train = confusion_table(df_train$diagnosis, pred_wdbc_simple$train),
+  test = confusion_table(df_test$diagnosis, pred_wdbc_simple$test)
+)
+
+acc_wdbc_simple <- list(
+  train = performance_table(df_train$diagnosis, pred_wdbc_simple$train),
+  test = performance_table(df_test$diagnosis, pred_wdbc_simple$test)
+)
+
+
+```
+
+```{r q2f-results}
+
+q2f <- list(
+  round(acc_wdbc_simple$train$acc, 4),
+  round(acc_wdbc_simple$test$acc, 4)
+)
+
+confusion_wdbc_simple$train %>% knitr::kable(.,
+  col.names = paste("pred.", colnames(.)),
+  caption = "Confusion table of predicted outcomes for training data"
+)
+
+confusion_wdbc_simple$test %>% knitr::kable(.,
+  col.names = paste("pred.", colnames(.)),
+  caption = "Confusion table of predicted outcomes for test data"
+)
+```
+
+- Training accuracy: `r q2f[[1]]`
+- Test accuracy: `r q2f[[2]]`
+
+No misclassifications in the training data shows that the model is likely
+overfit to that data. Overfitting has the effect of reducing test accuracy,
+which is also observed in this case.
+
+
+# Question 3
+
+## Part (a)
+
+```{r}
+
+# Question 3a -------------------------------------------------------------
+
+X_train <- df_train %>% select(-diagnosis) %>% as.matrix()
+X_test <- df_test %>% select(-diagnosis) %>% as.matrix()
+
+Y_train <- df_train$diagnosis
+Y_test <- df_test$diagnosis
+
+```
+
+The normalized training and test data is converted into matrices for use in
+`glmnet` models.
+
+
+## Part (b, c)
+
+```{r}
+
+# Question 3b -------------------------------------------------------------
+
+lambda_grid <- 10^seq(5, -18, length = 100)
+
+model_wdbc_ridge <- glmnet(
+  X_train, Y_train,
+  alpha = 0,
+  lambda = lambda_grid,
+  family = "binomial",
+  thresh = 1e-8
+)
+
+```
+
+```{r}
+
+# Question 3c -------------------------------------------------------------
+
+plot_wdbc_ridge <- plot_lambda_coef(model_wdbc_ridge, c(1, 3)) +
+  labs(subtitle = "Ridge logistic regression")
+
+```
+
+```{r q3c-results}
+plot_wdbc_ridge
+```
+
+Under a ridge logistic regression,the coefficient $\beta_1$ experiences a more
+extreme penalization as $\lambda$ increases, with $\beta_1$ and $\beta_3$
+converging to near-zero around $\text{log}(\lambda)=-10$.
+
+
+## Part (d)
+
+```{r}
+
+# Question 3d -------------------------------------------------------------
+
+model_wdbc_ridge_cv <- cv.glmnet(
+  X_train, Y_train,
+  alpha = 0,
+  lambda = lambda_grid,
+  family = "binomial",
+  type.measure = "class",
+  nfolds = 10,
+  thresh = 1e-8
+)
+
+plot_wdbc_ridge_cv <- plot_cv_error(model_wdbc_ridge_cv) +
+  labs(subtitle = "Ridge logistic regression")
+
+```
+
+```{r q3d-results}
+q3d <- list(
+  round(model_wdbc_ridge_cv$lambda.min, 3)
+)
+
+plot_wdbc_ridge_cv
+```
+
+Optimal $\lambda$: `r q3d[[1]]`
+
+
+## Part (e)
+
+```{r}
+
+# Question 3e -------------------------------------------------------------
+
+nzero_wdbc_ridge <- with(model_wdbc_ridge_cv, nzero[index["min", ]])
+
+```
+
+Using the optimal value of $\lambda$, there are `r nzero_wdbc_ridge` non-zero
+model coefficients. This is expected for a ridge regression model, which
+shrinks coefficients towards zero as $\lambda$ increases, but only requires
+them to be zero when $\lambda = \infty$.
+
+
+## Part (f)
+
+```{r}
+
+# Question 3f -------------------------------------------------------------
+
+model_wdbc_ridge_optimal <- glmnet(
+  X_train, Y_train,
+  alpha = 0,
+  lambda = model_wdbc_ridge_cv$lambda.min,
+  family = "binomial",
+  thresh = 1e-8
+)
+
+pred_wdbc_ridge <- list(
+  train = predict_bayes(model_wdbc_ridge_optimal, X_train),
+  test = predict_bayes(model_wdbc_ridge_optimal, X_test)
+)
+
+confusion_wdbc_ridge <- list(
+  train = confusion_table(Y_train, pred_wdbc_ridge$train),
+  test = confusion_table(Y_test, pred_wdbc_ridge$test)
+)
+
+acc_wdbc_ridge <- list(
+  train = performance_table(Y_train, pred_wdbc_ridge$train),
+  test = performance_table(Y_test, pred_wdbc_ridge$test)
+)
+
+```
+
+```{r q3f-results}
+
+q3f <- list(
+  round(acc_wdbc_ridge$train$acc, 4),
+  round(acc_wdbc_ridge$test$acc, 4)
+)
+
+confusion_wdbc_ridge$train %>% knitr::kable(.,
+  col.names = paste("pred.", colnames(.)),
+  caption = "Confusion table of predicted outcomes for training data"
+)
+
+confusion_wdbc_ridge$test %>% knitr::kable(.,
+  col.names = paste("pred.", colnames(.)),
+  caption = "Confusion table of predicted outcomes for test data"
+)
+```
+
+- Training accuracy: `r q3f[[1]]`
+- Test accuracy: `r q3f[[2]]`
+
+The training accuracy is slightly higher than the test accuracy, which is
+expected. The similarity between the two accuracies suggests that the model is
+not overfit to the training data, or the test data has a similar distribution
+to the training data.
+
+
+## Part (g, h)
+
+```{r}
+
+# Question 3g,h -----------------------------------------------------------
+
+roc_wdbc_ridge <- calculate_roc(model_wdbc_ridge_optimal, X_test, Y_test)
+auc_wdbc_ridge <- roc_wdbc_ridge$AUC$value
+
+```
+
+```{r q3g-results}
+roc_wdbc_ridge$plot + labs(title = "Ridge Model Test ROC Curve")
+```
+
+The area under the ROC curve is `r round(auc_wdbc_ridge, 3)`.
+
+
+# Question 4
+
+## Part (b, c)
+
+```{r}
+
+# Question 4b -------------------------------------------------------------
+
+model_wdbc_lasso <- glmnet(
+  X_train, Y_train,
+  alpha = 1,
+  lambda = lambda_grid,
+  family = "binomial",
+  thresh = 1e-8
+)
+
+```
+
+```{r}
+
+# Question 4c -------------------------------------------------------------
+
+plot_wdbc_lasso <- plot_lambda_coef(model_wdbc_lasso, c(1, 3)) +
+  labs(subtitle = "Lasso logistic regression")
+
+```
+
+```{r q4c-results}
+plot_wdbc_lasso
+```
+
+Under a lasso logistic regression,the coefficient $\beta_3$ is reduced to zero
+for all values of $\lambda$, while begins to sharply decrease in magnitude
+around $\text{log}(\lambda)=-20$, reaching zero around $\text{log}(\lambda)=-7$.
+
+
+## Part (d)
+
+```{r}
+
+# Question 4d -------------------------------------------------------------
+
+model_wdbc_lasso_cv <- cv.glmnet(
+  X_train, Y_train,
+  alpha = 1,
+  lambda = lambda_grid,
+  family = "binomial",
+  type.measure = "class",
+  nfolds = 10,
+  thresh = 1e-8
+)
+
+plot_wdbc_lasso_cv <- plot_cv_error(model_wdbc_lasso_cv) +
+  labs(subtitle = "Lasso logistic regression")
+
+```
+
+```{r q4d-results}
+q4d <- list(
+  round(model_wdbc_lasso_cv$lambda.min, 3)
+)
+
+plot_wdbc_lasso_cv
+```
+
+Optimal $\lambda$: `r q4d[[1]]`
+
+
+## Part (e)
+
+```{r}
+
+# Question 4e -------------------------------------------------------------
+
+nzero_wdbc_lasso <- with(model_wdbc_lasso_cv, nzero[index["min", ]])
+
+```
+
+Using the optimal value of $\lambda$, there are `r nzero_wdbc_lasso` non-zero
+model coefficients. This is expected for a lasso regression model, which
+will penalize coefficients to zero for intermediate values of $\lambda$.
+
+
+## Part (f)
+
+```{r}
+
+# Question 4f -------------------------------------------------------------
+
+model_wdbc_lasso_optimal <- glmnet(
+  X_train, Y_train,
+  alpha = 1,
+  lambda = model_wdbc_lasso_cv$lambda.min,
+  family = "binomial",
+  thresh = 1e-8
+)
+
+pred_wdbc_lasso <- list(
+  train = predict_bayes(model_wdbc_lasso_optimal, X_train),
+  test = predict_bayes(model_wdbc_lasso_optimal, X_test)
+)
+
+confusion_wdbc_lasso <- list(
+  train = confusion_table(Y_train, pred_wdbc_lasso$train),
+  test = confusion_table(Y_test, pred_wdbc_lasso$test)
+)
+
+acc_wdbc_lasso <- list(
+  train = performance_table(Y_train, pred_wdbc_lasso$train),
+  test = performance_table(Y_test, pred_wdbc_lasso$test)
+)
+
+```
+
+```{r q4f-results}
+
+q4f <- list(
+  round(acc_wdbc_lasso$train$acc, 4),
+  round(acc_wdbc_lasso$test$acc, 4)
+)
+
+confusion_wdbc_lasso$train %>% knitr::kable(.,
+  col.names = paste("pred.", colnames(.)),
+  caption = "Confusion table of predicted outcomes for training data"
+)
+
+confusion_wdbc_lasso$test %>% knitr::kable(.,
+  col.names = paste("pred.", colnames(.)),
+  caption = "Confusion table of predicted outcomes for test data"
+)
+```
+
+- Training accuracy: `r q4f[[1]]`
+- Test accuracy: `r q4f[[2]]`
+
+The test accuracy is slightly higher than the training accuracy, which is
+likely an artifact of the random data sampling. Considering them to be nearly
+equal shows that fitting a simpler model reduces overfitting and leads to more
+robust performance on unobserved data.
+
+
+## Part (g, h)
+
+```{r}
+
+# Question 4g,h -----------------------------------------------------------
+
+roc_wdbc_lasso <- calculate_roc(model_wdbc_lasso_optimal, X_test, Y_test)
+auc_wdbc_lasso <- roc_wdbc_lasso$AUC$value
+
+```
+
+```{r q4g-results}
+roc_wdbc_lasso$plot + labs(title = "Lasso Model Test ROC Curve")
+```
+
+The area under the ROC curve is `r round(auc_wdbc_lasso, 3)`.
+
+
+# Question 5
+
+```{r}
+
+# Question 5 --------------------------------------------------------------
+
+performance_summary_tbl <-
+  list(
+    simple = acc_wdbc_simple$test,
+    ridge = acc_wdbc_ridge$test,
+    lasso = acc_wdbc_lasso$test
+  ) %>%
+  bind_rows(.id = "model") %>%
+  mutate(nzero = c(30, nzero_wdbc_ridge, nzero_wdbc_lasso))
+
+```
+
+```{r q5-results}
+knitr::kable(
+  performance_summary_tbl,
+  col.names = c("Model", "Accuracy", "TPR", "FPR", "Non-zero coefs."),
+  caption = "Summary of test model performance",
+  digits = 4
+)
+```
+
+The simple logistic model performs worse than the ridge and lasso models on all
+performance metrics. While the ridge and lasso models have identical
+performance, the lasso model has the advantage of being a much simpler model,
+requiring half the predictors to get the same performance. This simplicity makes
+the lasso model more interpretable than any of the alternatives.
+
+
+\newpage
+
+# Appendix
+
+## Analysis
+
+```{r getlabels, include=FALSE}
+labs <- knitr::all_labels()
+labs <- labs[!labs %in% c("setup", "toc", "getlabels", "allcode")]
+labs <- labs[!grepl("results", labs)]
+```
+
+```{r allcode, ref.label=labs, eval=FALSE, echo=TRUE}
+```
+
+## Helper Functions
+
+```{r code=readLines("functions/predict_bayes.R"), eval=FALSE, echo=TRUE}
+```
+
+```{r code=readLines("functions/performance_metrics.R"), eval=FALSE, echo=TRUE}
+```
+
+```{r code=readLines("functions/calculate_roc.R"), eval=FALSE, echo=TRUE}
+```
+
+```{r code=readLines("functions/plots.R"), eval=FALSE, echo=TRUE}
+```
