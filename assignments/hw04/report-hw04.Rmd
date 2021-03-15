@@ -1,0 +1,495 @@
+---
+title: 'Homework #4'
+author: "Spencer Pease"
+date: "3/08/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(knitr.kable.NA = '-')
+```
+
+```{r}
+# Prep work ---------------------------------------------------------------
+
+library(dplyr)
+library(ggplot2)
+library(splines)
+library(boot)
+library(tree)
+library(randomForest)
+library(gbm)
+
+source("functions/evaluate_grid.R")
+source("functions/misclass_table.R")
+
+load("data/heart.RData")
+data_heart <- as_tibble(full)
+rm(full)
+
+```
+
+# Question 1
+
+## Part (a, b)
+
+```{r}
+
+# Question 1a,b -----------------------------------------------------------
+
+gen_sim_data <- function(n) {
+
+  X <- runif(n = n, min = -1, max = 1)
+  noise <- rnorm(n = n, mean = 0, sd = 0.1)
+  f <- function(x) 3 - 2 * x + 3 * x^3
+
+  Y <- f(X) + noise
+
+  return(list(X = X, Y = Y, f = f))
+
+}
+
+set.seed(2)
+data_sim <- gen_sim_data(n = 50)
+
+```
+
+For this exercise, $50$ observations are generated from the function
+
+$$ Y = f(X) + \epsilon $$
+
+where
+
+$$
+\begin{aligned}
+X &\sim \text{Unifrom}(-1, 1) \\
+\epsilon &\sim \text{Normal}(0, 0.1) \\
+f(X) &= 3 - 2X + 3X^3
+\end{aligned}
+$$
+
+
+## Part (c)
+
+```{r}
+
+# Question 1c -------------------------------------------------------------
+
+model_spline3 <- with(data_sim, smooth.spline(X, Y, lambda = 1e-3))
+model_spline7 <- with(data_sim, smooth.spline(X, Y, lambda = 1e-7))
+
+```
+
+Two smoothing spline models, with $\lambda = 10^{-3}$ and $\lambda = 10^{-7}$,
+are then fit to the generated dataset.
+
+
+## Part (d)
+
+```{r}
+
+# Question 1d -------------------------------------------------------------
+
+pred_sim_spline <- evaluate_grid(
+  data_sim$X, data_sim$Y,
+  pred_list = list(
+    "Reference" = data_sim$f,
+    "Spline (lambda = 1e-3)" = function(x) predict(model_spline3, x)$y,
+    "Spline (lambda = 1e-7)" = function(x) predict(model_spline7, x)$y
+  )
+)
+
+```
+
+```{r q1d-results}
+pred_sim_spline$plot + labs(title = "Spline Model Evaluation")
+```
+
+
+## Part (e)
+
+```{r}
+
+# Question 1e -------------------------------------------------------------
+
+model_spline_cv <- with(data_sim, smooth.spline(X, Y, cv = TRUE))
+
+```
+
+```{r q1e-results}
+q1e <- list(
+  sprintf("%0.3e", model_spline_cv$lambda)
+)
+```
+
+Fitting a cross-validated smoothing spline model to the generated dataset shows
+that the optimal value of $\lambda$ is `r q1e[[1]]`.
+
+
+## Part (f)
+
+```{r}
+
+# Question 1f -------------------------------------------------------------
+
+pred_sim_spline_cv <- evaluate_grid(
+  data_sim$X, data_sim$Y,
+  pred_list = list(
+    "Reference" = data_sim$f,
+    "CV Spline" = function(x) predict(model_spline_cv, x)$y
+  )
+)
+
+```
+
+```{r q1f-results}
+pred_sim_spline_cv$plot + labs(title = "CV Spline Model Evaluation")
+```
+
+
+## Part (g)
+
+```{r}
+
+# Question 1g -------------------------------------------------------------
+
+estimate_spline <- function(data, indices, pred_point) {
+
+  data_boot <- data[indices, ]
+  spline3 <- with(data_boot, smooth.spline(X, Y, lambda = 1e-3))
+  spline7 <- with(data_boot, smooth.spline(X, Y, lambda = 1e-7))
+
+  return(c(
+    "spline3" = predict(spline3, pred_point)$y,
+    "spline7" = predict(spline7, pred_point)$y
+  ))
+
+}
+
+model_spline_boot <-
+  with(data_sim, tibble(X = X, Y = Y)) %>%
+  boot(estimate_spline, R = 1000, pred_point = 0)
+
+summary_spline_boot <- model_spline_boot$t %>%
+  as_tibble(.name_repair = "unique") %>%
+  rename(spline3 = 1, spline7 = 2) %>%
+  summarise(across(.fns = var, .names =  "{.col}_var"))
+
+```
+
+```{r q1g-results}
+knitr::kable(
+  summary_spline_boot %>% mutate(across(.fns = ~sprintf("%0.3e", .x))),
+  caption = "Bootstraped variance at X = 0",
+  digits = 4,
+  col.names = c(
+    "$\\hat{f}_{\\lambda = 10^{-3}}$", "$\\hat{f}_{\\lambda = 10^{-7}}$"
+  ),
+  eval = FALSE
+)
+```
+
+Looking at the estimated variance of $X = 0$ from $1000$ bootstrapped datasets
+for each spline model, we see that the model with greater smoothing had a
+lower variance. This is consistent with our understanding of how a less smooth
+model will overfit to the data more, leading to greater variation in estimates
+when fit to many bootstrapped datasets.
+
+
+# Question 2
+
+## Part (a)
+
+```{r}
+
+# Question 2a -------------------------------------------------------------
+
+obs_by_class <- data_heart %>%
+  group_by(Disease) %>%
+  summarise(observations = n())
+
+train_obs <- 200
+set.seed(2)
+df_shuffled <- data_heart[sample(nrow(data_heart)), ]
+df_train <- df_shuffled[1:train_obs, ]
+df_test <- df_shuffled[-(1:train_obs), ]
+
+```
+
+```{r q2a-results}
+knitr::kable(obs_by_class, caption = "Observations by disease class")
+```
+
+The *heart* dataset has a sample size $n$ of `r nrow(data_heart)` and
+`r ncol(data_heart) - 1` predictors $p$. *Table 2* shows a summary of the number
+of observations in each class.
+
+For model training, the *heart* dataset is split into a training set of
+`r nrow(df_train)` observations and test set of `r nrow(df_test)` observations.
+
+
+## Part (b, c)
+
+```{r}
+
+# Question 2b -------------------------------------------------------------
+
+model_tree_overgrown <- tree(Disease ~ ., data = df_train)
+
+
+# Question 2c -------------------------------------------------------------
+
+misclass_tree_overgrown <- misclass_table(
+  model_tree_overgrown,
+  df_train,
+  df_test,
+  type = "class"
+)
+
+```
+
+```{r q2c-results}
+knitr::kable(
+  misclass_tree_overgrown,
+  caption = "Misclassification error rates for the overgrown model",
+  digits = 3
+)
+```
+
+The overgrown tree model has a lower misclassification rate when predicting the
+training data class than when predicting the test data, which is expected since
+the model is overfit to the training data.
+
+
+## Part (d)
+
+```{r}
+
+# Question 2d -------------------------------------------------------------
+
+set.seed(2)
+
+model_tree_cv <- cv.tree(model_tree_overgrown, FUN = prune.misclass)
+
+optimal_tree_size <- with(model_tree_cv, size[which.min(dev)])
+model_tree_prune <- prune.tree(model_tree_overgrown, best = optimal_tree_size)
+
+plot_tree_prune <-
+  with(model_tree_cv, tibble(size = size, misclass_err = dev)) %>%
+  ggplot(aes(x = size, y = misclass_err)) +
+  geom_step() +
+  geom_point(color = "red3") +
+  theme_bw(base_family = "serif") +
+  labs(
+    title = "Misclassification Error vs Subtree Size",
+    x = "Subtree Size",
+    y = "Misclassification Error"
+  )
+
+```
+
+```{r q2d1-results, fig.asp=1.1}
+plot(model_tree_overgrown)
+text(model_tree_overgrown, pretty = 0, cex = .6)
+title("Overgrown and Pruned Tree")
+par(new = TRUE, oma = c(1, 0, .1, 2.5))
+plot(model_tree_prune, col = alpha("red", .4))
+# text(model_tree_prune, pretty = 0, cex = .8)
+```
+
+*Key: Black = overgrown tree; Red = pruned tree branches*
+
+
+```{r q2d2-results}
+plot_tree_prune
+```
+
+
+## Part (e)
+
+```{r}
+
+# Question 2e -------------------------------------------------------------
+
+misclass_tree_opt <- misclass_table(
+  model_tree_prune,
+  df_train,
+  df_test,
+  type = "class"
+)
+
+```
+
+```{r q2e-results}
+knitr::kable(
+  misclass_tree_opt,
+  caption = "Misclassification error rates for the optimal subtree model",
+  digits = 3
+)
+```
+
+The training misclassification rate of the optimal subtree model is higher than
+that of the overgrown tree, which is expected as there are fewer splits to
+overfit on. The test misclassification rate is higher than its training
+counterpart (as expected) and the that of the overgrown model. This may be an
+artifact of sampling, but it also shows how fitting the optimal subtree will
+only sacrifice a little accuracy, if any, for a corresponding reduction in
+variance.
+
+
+## Part (f)
+
+```{r}
+
+# Question 2f -------------------------------------------------------------
+
+set.seed(2)
+
+model_tree_bag <- randomForest(
+  Disease ~ .,
+  data = df_train,
+  mtry = ncol(df_train) - 1,
+  importance = TRUE
+)
+
+# misclass_tree_bag <- list(
+#   "train" = mean(model_tree_bag$predicted != df_train$Disease),
+#   "test" = mean(predict(model_tree_bag, df_test) != df_test$Disease)
+# )
+
+misclass_tree_bag <- misclass_table(model_tree_bag, df_train, df_test)
+
+```
+
+```{r q2f-results}
+knitr::kable(
+  misclass_tree_bag,
+  caption = "Misclassification error rates for the bagged tree model",
+  digits = 3
+)
+```
+
+The bagging model is able to reduce the training misclassification to zero, as
+well as reduce the test misclassification compared to the optimal pruned tree
+model. This shows the power bootstrapping data has for reducing variance in
+a tree model.
+
+
+## Part (g)
+
+```{r}
+
+# Question 2g -------------------------------------------------------------
+
+set.seed(2)
+
+model_tree_rf <- randomForest(
+  Disease ~ .,
+  data = df_train,
+  mtry = floor((ncol(df_train) - 1) / 3),
+  importance = TRUE
+)
+
+misclass_tree_rf2 <- list(
+  "train" = mean(model_tree_rf$predicted != df_train$Disease),
+  "test" = mean(predict(model_tree_rf, df_test) != df_test$Disease)
+)
+
+misclass_tree_rf <- misclass_table(model_tree_rf, df_train, df_test)
+
+```
+
+```{r q2g-results}
+knitr::kable(
+  misclass_tree_rf,
+  caption = "Misclassification error rates for the random forest model",
+  digits = 3
+)
+```
+
+The random forest model maintains the zero misclassification error for the
+training set, and reduces the test misclassification further. This shows that
+sampling a subset of predictors when bootstrapping is another way to create a
+model more robust to new observations.
+
+
+## Part (h)
+
+Both bagged trees and random forests use bootstrapped data to fit their models.
+Since bootstrapping involves randomly sampling training data, there is no
+innate guarantee that a model will be fit using the same data sample each time,
+leading to randomness in the final results.
+
+In addition, random forests select a subset of predictors for each
+bagged tree. The selection process also has elements of randomness, so again
+fitting the same model will produce different results.
+
+
+## Part (i)
+
+```{r}
+
+# Question 2i -------------------------------------------------------------
+
+df_train_int <- df_train %>% mutate(Disease = as.integer(Disease) - 1L)
+df_test_int <- df_test %>% mutate(Disease = as.integer(Disease) - 1L)
+
+set.seed(2)
+
+model_tree_boost <- gbm(
+  Disease ~ .,
+  data = df_train_int,
+  distribution = "bernoulli",
+  n.trees = 500,
+  shrinkage = 0.1,
+  interaction.depth = 2
+)
+
+misclass_tree_boost <- misclass_table(
+  model_tree_boost,
+  df_train_int,
+  df_test_int,
+  bayes_thresh = 0.5,
+  type = "response"
+)
+
+```
+
+```{r q2i-results}
+knitr::kable(
+  misclass_tree_boost,
+  caption = "Misclassification error rates for the boosted tree model",
+  digits = 3
+)
+```
+
+The boost tree model has the best performance out of all the tree models, with
+zero training classification error and the lowest test misclassification error.
+By sequentially building off of the residuals of previous splits, boosted
+trees target difficult classification cases for improvement and perform better
+than other methods.
+
+
+\newpage
+
+# Appendix
+
+## Analysis
+
+```{r getlabels, include=FALSE}
+labs <- knitr::all_labels()
+labs <- labs[!labs %in% c("setup", "toc", "getlabels", "allcode")]
+labs <- labs[!grepl("results", labs)]
+```
+
+```{r allcode, ref.label=labs, eval=FALSE, echo=TRUE}
+```
+
+## Helper Functions
+
+```{r code=readLines("functions/evaluate_grid.R"), eval=FALSE, echo=TRUE}
+```
+
+```{r code=readLines("functions/misclass_table.R"), eval=FALSE, echo=TRUE}
+```
