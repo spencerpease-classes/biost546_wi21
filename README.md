@@ -15,3 +15,14 @@ reduction methods, among others.
 
 
 ## Assignments
+
+ - Homework 1 ([link][hw01])
+ - Homework 2 ([link][hw02])
+ - Homework 3 ([link][hw03])
+ - Homework 4 ([link][hw04])
+
+
+[hw01]: assignments/hw01
+[hw02]: assignments/hw02
+[hw03]: assignments/hw03
+[hw04]: assignments/hw04
